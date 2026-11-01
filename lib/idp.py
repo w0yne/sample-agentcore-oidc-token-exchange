@@ -1,7 +1,7 @@
-"""Shared plumbing for the self-hosted Keycloak sample: state, naming and API clients.
+"""Shared plumbing for the selected IdP: state, naming and API clients.
 
 Environment (all optional):
-  IDP                 keycloak (the only supported value, also the default)
+  IDP                 keycloak (default) | entra
   SAMPLE_PREFIX       name prefix of every AWS resource and secret (default sample-oidc)
   SAMPLE_REGION       region of the resource API, Gateway and Identity
                       (default us-west-2; partition is derived; regional features need confirmation)
@@ -36,14 +36,20 @@ USERS = ("user-a", "user-b")
 
 
 def load(name: str | None = None) -> ModuleType:
-    """Load the self-hosted Keycloak adapter."""
-    name = name or os.environ.get("IDP", "keycloak")
-    if name != "keycloak":
-        raise ValueError("Only self-hosted Keycloak is supported")
+    """Load the selected Keycloak or Microsoft Entra ID adapter."""
+    name = selected_name(name)
     spec = importlib.util.spec_from_file_location(f"adapter_{name}", ROOT / "idp" / name / "adapter.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def selected_name(name: str | None = None) -> str:
+    """Resolve and validate an IdP name before using it in a path."""
+    name = name if name is not None else os.environ.get("IDP", "keycloak")
+    if name not in ("keycloak", "entra"):
+        raise ValueError("IDP must be keycloak or entra")
+    return name
 
 
 def state_file(idp: str, kind: str) -> pathlib.Path:
@@ -54,7 +60,7 @@ def state_file(idp: str, kind: str) -> pathlib.Path:
 
 def evidence_path(name: str) -> pathlib.Path:
     """Return the path of an evidence file for the current IdP, creating its directory."""
-    d = ROOT / "evidence" / "keycloak"
+    d = ROOT / "evidence" / selected_name()
     d.mkdir(parents=True, exist_ok=True)
     return d / name
 

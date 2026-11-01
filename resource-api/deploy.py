@@ -34,12 +34,12 @@ else:
 api_id = found["ApiId"]
 authorizer_args = {
     "ApiId": api_id,
-    "Name": "keycloak-jwt",
+    "Name": f"{A.NAME}-jwt",
     "AuthorizerType": "JWT",
     "IdentitySource": ["$request.header.Authorization"],
     "JwtConfiguration": {"Issuer": settings["issuer"], "Audience": settings["audiences"]},
 }
-existing_auth = next((a for a in api.get_authorizers(ApiId=api_id)["Items"] if a["Name"] == "keycloak-jwt"), None)
+existing_auth = next((a for a in api.get_authorizers(ApiId=api_id)["Items"] if a["Name"] == f"{A.NAME}-jwt"), None)
 if existing_auth:
     authorizer_id = existing_auth["AuthorizerId"]
     api.update_authorizer(AuthorizerId=authorizer_id, **authorizer_args)

@@ -32,8 +32,8 @@ for user in idp.USERS:
         f"{user}: exchanged identity echoed",
         status == 200
         and not result.get("isError")
-        and claims.get("sub") == expected
-        and claims.get("azp") == "gateway",
+        and claims.get(A.USER_ID_CLAIM) == expected
+        and claims.get("azp") == A.expected_exchanged_azp(),
     )
 for label, token in (
     ("missing", None),

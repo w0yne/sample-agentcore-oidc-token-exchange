@@ -15,7 +15,7 @@ not a public issue. This is a non-production identity-echo sample.
   Same-account IAM principals with direct `lambda:InvokeFunction` can fabricate an event,
   including its authorizer context. Restrict that permission and function-configuration access.
   A direct invocation is not an authenticated end-user request.
-- Control qualifying token issuance at Keycloak. The identity response may include personal claims
+- Control qualifying token issuance at the selected IdP. The identity response may include personal claims
   and must be handled as sensitive data.
 - Tokens and cached exchange results can remain usable until expiry. Do not interpret a successful
   call as a fresh account-status or membership check.
@@ -58,6 +58,15 @@ HTTP helpers require HTTPS and reject redirects; AWS SDK calls use their own tra
 Test sign-in uses password grants only for disposable synthetic users. Real clients should
 use the IdP's supported authorization-code/PKCE flow. Leave detailed Gateway errors disabled.
 Use a dedicated realm and explicitly maintain its configuration alongside the setup script.
+
+For Entra, use only a dedicated disposable tenant and an MFA-authenticated tenant-admin
+Azure CLI login. Keep tenant security controls enabled; if they block password grants,
+stop the unattended tests rather than weaken policy. Setup grants delegated consent
+tenant-wide for the sample apps; it creates no user directory roles or group-based access
+rules. Client secrets expire after 90 days and are not automatically rotated.
+Graph setup sends sensitive request bodies through mode-600 temporary files, removed
+after the CLI call; it does not print CLI diagnostics or credentials. Cleanup checks the
+explicit tenant and exact names. Never reuse another deployment's prefix or object names.
 
 ## Region and Assurance Limits
 

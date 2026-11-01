@@ -3,7 +3,8 @@
 [English](README.md)
 
 演示用户身份经过 Amazon Bedrock AgentCore Gateway 和 AgentCore Identity 的 OIDC token exchange，
-再由下游 API 回显。唯一 IdP 示例是**部署在 Amazon EC2 上的自托管 Keycloak**。
+再由下游 API 回显。IdP 可选**部署在 Amazon EC2 上的自托管 Keycloak**（默认）
+或 **Microsoft Entra ID**（`IDP=entra`）。
 下游 JWT 校验由 **Amazon API Gateway HTTP API 原生 JWT authorizer** 执行，
 Lambda 函数展示托管 authorizer 已验证的身份 claims。
 
@@ -13,6 +14,8 @@ Lambda 函数展示托管 authorizer 已验证的身份 claims。
 ## 架构
 
 ![架构图](docs/architecture.png)
+
+图和下面的编号示例展示 Keycloak；Entra 使用同一托管边界，标识符及交换协议差异见后文。
 
 1. 测试用户登录 Keycloak，获得 audience 为 `gateway` 的 T1。
 2. 客户端携带 T1 调用 Gateway 的 MCP 工具 `resource___whoami`。
@@ -25,7 +28,7 @@ Lambda 函数展示托管 authorizer 已验证的身份 claims。
    Lambda 将 `requestContext.authorizer.jwt.claims` 原样序列化返回。
 
 此示例展示 token exchange 后的身份。
-符合托管校验条件的身份可以看到自己的 claims；Keycloak 的 token 签发策略决定哪些身份能获得相应 token。
+符合托管校验条件的身份可以看到自己的 claims；所选 IdP 的 token 签发策略决定哪些身份能获得相应 token。
 引入敏感业务数据之前需要单独设计访问控制。
 
 ## 前提
@@ -33,8 +36,12 @@ Lambda 函数展示托管 authorizer 已验证的身份 claims。
 - Python 3.10+、AWS CLI v2、具备所需资源创建权限的 AWS 凭证。
 - 应用区域支持 AgentCore Gateway/Identity、HTTP API JWT authorizer、Lambda、
   IAM、Secrets Manager 和 CloudWatch Logs。
-- Route 53 托管域及未使用的公共 DNS 名；`KC_REGION` 中有默认 VPC、EC2、EBS、Elastic IP 和 SSM。
-- 使用独立的 Keycloak realm；setup 添加示例所需配置，管理员负责维护 realm 中的其他用户和客户端。
+- Keycloak 专用：Route 53 托管域及未使用的公共 DNS 名；`KC_REGION` 中有默认 VPC、EC2、EBS、Elastic IP 和 SSM。
+- Keycloak 专用：独立 realm；setup 添加示例所需配置，管理员负责维护 realm 中的其他用户和客户端。
+- Entra 专用：Azure CLI，以及**没有真实用户和数据的专用、可丢弃测试 tenant**。
+  使用 tenant 管理员交互式 `az login` 并完成 MFA；保持 Security defaults、Conditional Access 和 MFA 开启。
+  测试用户的 password grant（ROPC）不能完成 MFA；若被策略阻止，停止无人值守测试，
+  改用隔离的 Keycloak 或另行适配 authorization code + PKCE。不能为了测试关闭安全控制或豁免用户。
 
 Keycloak discovery、JWKS 和 token 端点必须能通过可信公共 HTTPS 被托管服务访问。
 管理路径仅允许 `KC_ADMIN_CIDR`。测试使用 password grant；真实用户应用应采用 IdP 支持的
@@ -51,6 +58,7 @@ export KC_HOSTED_ZONE_ID=<your-hosted-zone-id>
 export KC_ADMIN_CIDR=<your-admin-public-ip>/32
 export KC_REALM=sample
 export SAMPLE_REGION=us-west-2
+export IDP=keycloak
 resource-api/build.sh .build
 python idp/keycloak/infra.py
 python idp/keycloak/setup.py
@@ -63,13 +71,14 @@ API 更新期间禁用默认端点，先配置 authorizer 并保护现有路由�
 移除 `GET /v1/me` 以外的路由，最后启用端点。失败时端点可能保持禁用，修复后重跑。
 脚本不支持自定义域名及手工添加的 stage/integration。
 
-HTTP API 名为 `<prefix>-keycloak-resource-api-jwt`。部署为函数维护专用端点；
-如有名为 `<prefix>-keycloak-resource-api` 的 API，会在暂停 Lambda 调用权限期间删除它。
+HTTP API 名为 `<prefix>-<idp>-resource-api-jwt`。部署为函数维护专用端点；
+如有名为 `<prefix>-<idp>-resource-api` 的 API，会在暂停 Lambda 调用权限期间删除它。
 维护过程可能中断服务并改变 URL，部署后必须重跑 `gateway/provision.py` 并更新直接客户端。
 
 | 环境变量 | 默认值 | 作用 |
 |---|---|---|
-| `IDP` | `keycloak` | 唯一支持值 |
+| `IDP` | `keycloak` | `keycloak` 或 `entra` |
+| `ENTRA_TENANT_ID` | Entra setup/cleanup 必填 | 可丢弃测试 tenant 的 GUID，必须与 Azure CLI 登录一致 |
 | `SAMPLE_PREFIX` | `sample-oidc` | AWS 应用资源前缀 |
 | `SAMPLE_REGION` / `SAMPLE_PROFILE` | `us-west-2` / 默认凭证链 | API、Gateway、Identity 的区域与凭证 |
 | `SECRETS_REGION` | `us-west-2` | 全球账号中 IdP 源凭证的 Secrets Manager 区域 |
@@ -80,9 +89,61 @@ HTTP API 名为 `<prefix>-keycloak-resource-api-jwt`。部署为函数维护专�
 | `KC_ADMIN_CIDR` | 自动发现的公网 IP `/32` | 创建时设置的管理访问范围 |
 | `SAMPLE_GATEWAY_DEBUG` | 未设置 | `1` 返回详细错误，只用于调试 |
 
-issuer、audience、scope 由 Keycloak adapter 的 `resource_api_config()` 提供给托管 API。
-Lambda 不保存身份配置；Gateway 入口只允许 audience `gateway`。
+issuer、audience、scope 由所选 adapter 的 `resource_api_config()` 提供给托管 API。
+Lambda 不保存身份配置；Gateway 入口只允许自身 audience，不接受 resource API 的 audience。
 `KC_ADMIN_CIDR`、版本和实例类型不会通过重跑 infra 更新已有实例。
+
+### Microsoft Entra ID
+
+使用包含 `idp/entra/` 的当前 fork checkout；此选项在原 Keycloak 示例上扩展。
+无需部署 Keycloak、EC2 或 Route 53。选一个未使用的前缀：3-40 个小写字母、数字或连字符，
+首字符为字母。不要复用已有应用、用户名称或其他 tenant 的前缀。
+
+```sh
+export IDP=entra
+export ENTRA_TENANT_ID='YOUR-DISPOSABLE-TENANT-GUID'
+export AWS_PROFILE='YOUR-GLOBAL-AWS-SANDBOX-PROFILE'
+export SAMPLE_PROFILE="$AWS_PROFILE"
+export SAMPLE_REGION=us-west-2
+export SECRETS_REGION=us-west-2
+export SAMPLE_PREFIX=oidc-entra-lab
+export SAMPLE_STATE="$PWD/.state-entra-lab"
+
+az login --tenant "$ENTRA_TENANT_ID" --allow-no-subscriptions
+aws sts get-caller-identity
+python idp/entra/setup.py
+resource-api/build.sh .build
+python resource-api/deploy.py .build/resource-api.zip
+python gateway/provision.py
+```
+
+Setup 在修改前核对 tenant 及已有客户端凭证，创建三个 single-tenant app registration：
+`<prefix>-app`、`<prefix>-gateway`、`<prefix>-resource-api`，对应的 service principal、
+delegated admin consent，以及两个 cloud-only 合成测试用户。
+不创建组、不授予测试用户目录管理员角色、不修改 tenant 安全策略。
+Admin consent 在这个可丢弃 tenant 内对所有用户生效，因此不能在组织生产 tenant 执行。
+`resource.other` 只用于同 audience、缺少 `resource.read` 的拒绝访问测试，不授予 API 路由访问权。
+
+应用使用 `api://<appId>` 标识符。客户端密钥及生成的用户密码仅写入 Secrets Manager，
+名称为 `<prefix>/entra/app-client`、`gateway-client` 和 `users`，使用 AWS 默认凭证链。
+`<SAMPLE_STATE>/entra-state.json` 只保存 ID。客户端密钥有效期 90 天，重跑 setup 会复用，
+不会自动续期；已存在的 Identity provider 也保留自己的密钥副本。
+再次测试应先清理再使用新前缀，不能假设修改源 secret 就同步完成 provider 轮换。
+
+| 边界 / claim | Keycloak | Entra v2 |
+|---|---|---|
+| Identity provider | `CustomOauth2`，RFC 8693 | `MicrosoftOauth2`，内置 on-behalf-of（OBO） |
+| Gateway outbound grant | `TOKEN_EXCHANGE` | `TOKEN_EXCHANGE`，Identity 内部执行 Microsoft OBO 协议 |
+| Gateway T1 `aud` / `azp` | `gateway` / `app` | Gateway app GUID / 客户端 app GUID |
+| Resource issuer | realm URL | `https://login.microsoftonline.com/<tenant-id>/v2.0` |
+| Resource T2 `aud` | `resource-api` | Resource app GUID，**不是** `api://` URI |
+| Resource scope | `scope` 中的 `resource.read` | `scp` 中的 `resource.read`；请求时使用 `api://<resource-appId>/resource.read` |
+| 测试比较的稳定用户标识 | `sub` | 所配置 tenant 内的 `oid`；`sub` 随 app 不同 |
+| T2 `azp` | `gateway` | Gateway app GUID |
+
+Gateway 保留托管的 `azp EQUALS <client-appId>` 检查，不提供关闭认证或 token passthrough 模式。
+Discovery、密钥和 token 校验由 API Gateway 执行；Lambda 保持原样回显 claims。
+Entra 测试比较已验证的 `oid`，不在应用代码中增加身份校验或业务授权。
 
 ### AWS 中国区域
 
@@ -98,6 +159,11 @@ Keycloak 的 discovery 端点及其声明的 JWKS URI 必须能被中国区 API 
 服务可用不等于特定 Keycloak 部署或完整 AgentCore token-exchange 链路已经验证通过。
 请在目标环境检查链路及区域依赖，再使用这一托管访问控制边界。
 
+Entra adapter 使用全球 Microsoft Entra ID 的 `login.microsoftonline.com` 和 `graph.microsoft.com`，
+不是世纪互联运营的云；选择 AWS 中国区域不会改变 Microsoft 端点。
+需单独确认托管 AWS 服务到 discovery/token 端点的连通性、Identity vendor 支持及跨境政策。
+本次 fork 的 Entra 变更只有离线测试覆盖，不声明任何区域的 live e2e 已通过。
+
 ## 使用与检查
 
 本地 HTTPS 测试需要 PATH 中可用的 OpenSSL，用于生成临时测试证书。
@@ -106,7 +172,7 @@ Keycloak 的 discovery 端点及其声明的 JWKS URI 必须能被中国区 API 
 import json
 from lib import idp, mcp
 adapter = idp.load()
-with open(idp.state_file("keycloak", f"gateway-{idp.REGION}")) as state:
+with open(idp.state_file(adapter.NAME, f"gateway-{idp.REGION}")) as state:
     gateway = json.load(state)["gatewayUrl"]
 status, reply = mcp.tool(gateway, adapter.token("user-a", "gateway"), "resource___whoami", {})
 ```
@@ -126,6 +192,9 @@ pre-commit 还需安装 git-secrets 并注册 AWS 规则。
 获得部署测试授权后，可分别运行 `tests/e2e/test_resource_api.py`、
 `tests/e2e/test_gateway.py`、`tests/e2e/test_identity_direct.py`。
 最后一个脚本会创建测试 workload identity；使用端点前必须通过拒绝访问测试。
+三个 live 脚本必须使用同一组 `IDP`、前缀、state 和账号变量。
+Entra 的 ROPC 若被策略阻止，应记为测试受阻，不能削弱 MFA。
+证据分别写入 `evidence/keycloak/`、`evidence/entra/`；同一 IdP 换部署前先归档旧证据。
 
 ## 清理
 
@@ -134,13 +203,32 @@ python scripts/cleanup.py
 python scripts/cleanup.py --execute --idp keycloak
 ```
 
-`--region R` 可重复；不加 `--idp keycloak` 时仅清理所选区域的应用资源。
-加上后还删除 Keycloak 实例及 realm 数据、EIP、安全组、实例角色和凭证。
+`--region R` 可重复；不加 `--idp` 时仅清理环境变量 `IDP`（默认 Keycloak）在所选区域的应用资源。
+`--idp` 可重复，应用与 IdP 清理都只针对选中的栈。
+`--idp keycloak` 还删除 Keycloak 实例及 realm 数据、EIP、安全组、实例角色和凭证。
 DNS 清理需要原来的 `KC_HOSTNAME`、`KC_HOSTED_ZONE_ID` 和 `KC_REGION`。
 Secrets Manager 无恢复窗口删除；失败后没有自动回滚。
 按精确资源名与项目标签选择，不要复用它们。列表只读第一页，适用于小型 sandbox。
 Gateway 管理的 workload identity 和 provider secret 预计由所属服务清理，
 必须通过最终 dry run 和服务资源清单确认。其他日志和手工添加的资源不在清理范围。
+
+Entra 保持原部署环境变量和 tenant 管理员登录：
+
+```sh
+python scripts/cleanup.py --idp entra
+python scripts/cleanup.py --execute --idp entra
+python scripts/cleanup.py --idp entra
+```
+
+先审阅 dry run，执行后再次 dry run，必须不再列出残留。
+脚本在 AWS 删除前核对 `ENTRA_TENANT_ID`，按 tenant 内唯一的精确 app display name 及完整测试用户 UPN 查找，
+不是宽泛的前缀匹配；应用重名则停止，并在删除计划中展示 object ID。
+Setup 到 cleanup 期间应保持 tenant 默认域名不变。Azure CLI 缺失、未登录、tenant 错误或 Entra 列表不完整时，
+输出 `NOT CHECKED` 并非零退出。
+`--skip-entra-objects` 不调用 `az`，只保留 Entra apps/users；**仍会删除**所选 AWS 资源和源 secret，
+不能据此声称 tenant 已清理。不再需要时删除测试 tenant；脚本不永久清除目录的软删除对象，
+不删除 tenant。Service principal/consent 清理及安全策略保持情况需要另行核对。
+AWS 资源标签为 `project=<SAMPLE_PREFIX>`，名称也带 IdP，因此 `--idp entra` 不选择 Keycloak 资源。
 
 ## 安全、费用和许可证
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Provision AgentCore Identity and a Gateway for self-hosted Keycloak, in SAMPLE_REGION.
+"""Provision AgentCore Identity and a Gateway for the selected IdP, in SAMPLE_REGION.
 
 Builds aws and aws-cn ARNs (regional feature availability must be confirmed) and creates:
   * OAuth2 credential provider holding the IdP's `gateway` client (the token-exchange middle tier), from the adapter;
   * Gateway `<prefix>-<idp>-gw` with CUSTOM_JWT inbound auth against the IdP's OIDC discovery document;
-  * OpenAPI target `resource` with RFC 8693 TOKEN_EXCHANGE to the managed identity echo API.
+  * OpenAPI target `resource` with TOKEN_EXCHANGE to the managed identity echo API
+    (MicrosoftOauth2's preset OBO for Entra; CustomOauth2 with RFC 8693 for Keycloak).
 Usage: python gateway/provision.py
   SAMPLE_GATEWAY_DEBUG=1  sets the Gateway exceptionLevel to DEBUG (detailed error messages in responses to callers);
                           off by default
@@ -161,6 +162,7 @@ schema = {
     },
 }
 x = A.exchange_params()
+# Gateway's grant stays TOKEN_EXCHANGE for both vendors; MicrosoftOauth2 handles the OBO wire protocol.
 oauth = {
     "providerArn": prov_arn,
     "grantType": "TOKEN_EXCHANGE",

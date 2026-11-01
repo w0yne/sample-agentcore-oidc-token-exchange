@@ -3,15 +3,20 @@
 
 DRY RUN by default: prints what would be deleted; --execute deletes.
 
-  scripts/cleanup.py [--execute] [--region R ...] [--idp keycloak]
+  scripts/cleanup.py [--execute] [--region R ...] [--idp keycloak|entra ...] [--skip-entra-objects]
 
 For each --region (default SAMPLE_REGION; SAMPLE_PROFILE selects the AWS profile): Gateway targets and gateways
-<prefix>-keycloak-gw, the Identity OAuth2 provider <prefix>-keycloak, the workload identities
+<prefix>-<idp>-gw, the Identity OAuth2 provider <prefix>-<idp>, the workload identities
 <prefix>-<idp>-workload, the roles <prefix>-<idp>-gateway-role, and wherever the resource API was deployed:
-the HTTP API, the Lambda and the role <prefix>-keycloak-resource-api.
+the HTTP API, the Lambda and the role <prefix>-<idp>-resource-api. --idp selects the IdPs;
+without it, only AWS application resources for IDP (default keycloak) are considered.
 With --idp keycloak: the EC2 instance <prefix>-kc, its Elastic IP / security group / role + instance profile,
 the DNS A record (needs KC_HOSTNAME and KC_HOSTED_ZONE_ID; ONLY that record is deleted) and the secrets
 <prefix>/keycloak/*.
+With --idp entra: the uniquely named Entra apps and exact test-user UPNs, plus <prefix>/entra/* secrets.
+Entra object cleanup requires ENTRA_TENANT_ID and a matching tenant-admin az login.
+--skip-entra-objects retains only Entra objects, not AWS resources or source secrets.
+Failed Entra listing is NOT CHECKED and exits nonzero, including during dry run.
 Resources are selected by their exact names, which all start with the prefix. The one exception is the Keycloak
 Elastic IP, which has no name of its own: it is selected by the tag project=<prefix> together with either
 Name=<prefix>-kc or no Name tag at all (infra.py adopts such an address), so do not give other Elastic IPs the project
@@ -25,9 +30,13 @@ must list nothing, and report nothing as NOT CHECKED, before you consider the ac
 
 import argparse
 import contextlib
+import json
 import os
 import pathlib
+import re
+import subprocess
 import sys
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -39,9 +48,15 @@ from lib import idp, wait
 ap = argparse.ArgumentParser()
 ap.add_argument("--execute", action="store_true")
 ap.add_argument("--region", action="append")
-ap.add_argument("--idp", choices=["keycloak"], action="append", default=[])
+ap.add_argument("--idp", choices=["keycloak", "entra"], action="append", default=[])
+ap.add_argument(
+    "--skip-entra-objects",
+    action="store_true",
+    help="keep Entra apps/users without running az; AWS application resources and source secrets are still deleted",
+)
 args = ap.parse_args()
 P, X = idp.PREFIX, args.execute
+SELECTED = list(dict.fromkeys(args.idp or [idp.selected_name()]))
 FAILED: list[str] = []
 
 
@@ -56,6 +71,52 @@ def do(what: str, fn: Callable[[], Any]) -> None:
             FAILED.append(what)
 
 
+def az_json(method: str, url: str) -> dict[str, Any]:
+    """Call Graph without logging CLI diagnostics that may contain credentials."""
+    result = subprocess.run(  # noqa: S603  fixed argv, no shell
+        ["az", "rest", "--method", method, "--url", url, "-o", "json"],  # noqa: S607  operator CLI
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(f"Graph {method} failed (exit {result.returncode}); check Azure login and permissions")
+    return json.loads(result.stdout) if result.stdout.strip() else {}
+
+
+ENTRA_OBJECTS: list[tuple[str, dict[str, Any]]] = []
+if "entra" in SELECTED and not re.fullmatch(r"[a-z][a-z0-9-]{2,39}", P):
+    raise SystemExit("Use a unique SAMPLE_PREFIX of 3-40 lowercase letters, digits or hyphens")
+if "entra" in args.idp and not args.skip_entra_objects:
+    graph = "https://graph.microsoft.com/v1.0"
+    try:
+        tenant = os.environ.get("ENTRA_TENANT_ID", "")
+        uuid.UUID(tenant)
+        orgs = az_json("GET", f"{graph}/organization?$select=id,verifiedDomains")["value"]
+        if len(orgs) != 1 or orgs[0]["id"] != tenant:
+            raise ValueError("Azure login does not match ENTRA_TENANT_ID")
+        domain = next((d["name"] for d in orgs[0]["verifiedDomains"] if d["isDefault"]), None)
+        if not domain:
+            raise ValueError("Entra default domain could not be determined")
+        exact = {
+            "applications": ("displayName", [f"{P}-resource-api", f"{P}-gateway", f"{P}-app"]),
+            "users": ("userPrincipalName", [f"{P}-{user}@{domain}" for user in idp.USERS]),
+        }
+        for kind, (field, names) in exact.items():
+            query = " or ".join(f"{field} eq '{name}'" for name in names)
+            found = az_json("GET", f"{graph}/{kind}?$filter={query}&$select=id,{field}")
+            if found.get("@odata.nextLink"):
+                raise ValueError("Entra listing is paginated; review it before cleanup")
+            for name in names:
+                matches = [obj for obj in found["value"] if obj.get(field) == name]
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous Entra object name; review object IDs before cleanup")
+                if matches:
+                    ENTRA_OBJECTS.append((kind, {**matches[0], "label": name}))
+    except (OSError, RuntimeError, ValueError, KeyError) as error:
+        print(f"NOT CHECKED: Entra objects ({type(error).__name__}); verify ENTRA_TENANT_ID and tenant-admin az login")
+        sys.exit(1)
+
+
 for region in args.region or [idp.REGION]:
     sess = idp.session(region)
     ctl, iam, lam, api = (
@@ -64,7 +125,7 @@ for region in args.region or [idp.REGION]:
         sess.client("lambda"),
         sess.client("apigatewayv2"),
     )
-    for g in [g for g in ctl.list_gateways()["items"] if g["name"] == f"{P}-keycloak-gw"]:
+    for g in [g for g in ctl.list_gateways()["items"] if g["name"] in [f"{P}-{i}-gw" for i in SELECTED]]:
         for t in ctl.list_gateway_targets(gatewayIdentifier=g["gatewayId"])["items"]:
             do(
                 f"[{region}] gateway target {g['name']}/{t['name']}",
@@ -85,17 +146,25 @@ for region in args.region or [idp.REGION]:
             ctl.delete_gateway(gatewayIdentifier=g["gatewayId"])
 
         do(f"[{region}] gateway {g['name']} ({g['gatewayId']})", drop_gateway)
-    for p in [p for p in ctl.list_oauth2_credential_providers()["credentialProviders"] if p["name"] == f"{P}-keycloak"]:
+    for p in [
+        p
+        for p in ctl.list_oauth2_credential_providers()["credentialProviders"]
+        if p["name"] in [f"{P}-{i}" for i in SELECTED]
+    ]:
         do(
             f"[{region}] oauth2 credential provider {p['name']}",
             lambda p=p, ctl=ctl: ctl.delete_oauth2_credential_provider(name=p["name"]),
         )
-    for w in [w for w in ctl.list_workload_identities()["workloadIdentities"] if w["name"] == f"{P}-keycloak-workload"]:
+    for w in [
+        w
+        for w in ctl.list_workload_identities()["workloadIdentities"]
+        if w["name"] in [f"{P}-{i}-workload" for i in SELECTED]
+    ]:
         do(
             f"[{region}] workload identity {w['name']}",
             lambda w=w, ctl=ctl: ctl.delete_workload_identity(name=w["name"]),
         )
-    names = [f"{P}-keycloak-{what}" for what in ("gateway-role", "resource-api")]
+    names = [f"{P}-{i}-{what}" for i in SELECTED for what in ("gateway-role", "resource-api")]
     for role in names:
         try:
             iam.get_role(RoleName=role)
@@ -111,7 +180,7 @@ for region in args.region or [idp.REGION]:
             iam.delete_role(RoleName=role)
 
         do(f"[{region}] IAM role {role} (+ its policies)", drop)
-    api_names = [f"{P}-keycloak-resource-api", f"{P}-keycloak-resource-api-jwt"]
+    api_names = [f"{P}-{i}-resource-api{suffix}" for i in SELECTED for suffix in ("", "-jwt")]
     for a in [a for a in api.get_apis()["Items"] if a["Name"] in api_names]:
         do(f"[{region}] HTTP API {a['Name']} ({a['ApiId']})", lambda a=a, api=api: api.delete_api(ApiId=a["ApiId"]))
     for fn in [n for n in names if n.endswith("resource-api")]:
@@ -130,6 +199,11 @@ for region in args.region or [idp.REGION]:
             )
 
 sm = boto3.client("secretsmanager", region_name=idp.SECRETS_REGION)
+for kind, obj in ENTRA_OBJECTS:
+    do(
+        f"Entra {kind[:-1]} {obj['label']} ({obj['id']})",
+        lambda kind=kind, obj=obj: az_json("DELETE", f"https://graph.microsoft.com/v1.0/{kind}/{obj['id']}"),
+    )
 for which in args.idp:
     if which == "keycloak":
         kr = os.environ.get("KC_REGION", "us-west-2")
@@ -191,7 +265,8 @@ for which in args.idp:
         else:
             print("note: set KC_HOSTNAME and KC_HOSTED_ZONE_ID to also delete the DNS record")
     for s in sm.list_secrets(Filters=[{"Key": "name", "Values": [f"{P}/{which}/"]}])["SecretList"]:
-        do(f"secret {s['Name']}", lambda s=s: sm.delete_secret(SecretId=s["Name"], ForceDeleteWithoutRecovery=True))
+        if s["Name"].startswith(f"{P}/{which}/"):
+            do(f"secret {s['Name']}", lambda s=s: sm.delete_secret(SecretId=s["Name"], ForceDeleteWithoutRecovery=True))
 if not X:
     print("\n(dry run: nothing was deleted; add --execute)")
 elif FAILED:

@@ -10,6 +10,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from entra_fixtures import RESOURCE, TENANT
+from entra_fixtures import adapter as entra_adapter
+
 from lib import idp
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -17,14 +20,15 @@ ACCOUNT = "123456" + "789012"
 
 
 class ResourceAuthorizerTest(unittest.TestCase):
-    def deploy(self, existing, fail_authorizer=False, base_api=False, reuse_integration=False):
+    def deploy(self, existing, fail_authorizer=False, base_api=False, reuse_integration=False, selected=None):
+        name = selected.NAME if selected else "keycloak"
         timeline = mock.Mock()
         api, iam, lam, sts = (mock.Mock() for _ in range(4))
-        for name, client in (("api", api), ("iam", iam), ("lam", lam)):
-            timeline.attach_mock(client, name)
+        for client_name, client in (("api", api), ("iam", iam), ("lam", lam)):
+            timeline.attach_mock(client, client_name)
         endpoint = {
             "ApiId": "example",
-            "Name": "sample-oidc-keycloak-resource-api-jwt",
+            "Name": f"sample-oidc-{name}-resource-api-jwt",
             "ApiEndpoint": "https://api.example.com",
         }
         api.get_apis.return_value = {"Items": [endpoint] if existing else []}
@@ -38,7 +42,7 @@ class ResourceAuthorizerTest(unittest.TestCase):
             )
         api.create_api.return_value = endpoint
         api.get_authorizers.return_value = {
-            "Items": [{"AuthorizerId": "jwt", "Name": "keycloak-jwt"}] if existing else []
+            "Items": [{"AuthorizerId": "jwt", "Name": f"{name}-jwt"}] if existing else []
         }
         api.create_authorizer.return_value = {"AuthorizerId": "jwt"}
         api.get_routes.return_value = {
@@ -80,7 +84,7 @@ class ResourceAuthorizerTest(unittest.TestCase):
             stack.enter_context(
                 mock.patch.multiple(idp, STATE=state, PARTITION="aws", REGION="us-west-2", PREFIX="sample-oidc")
             )
-            stack.enter_context(mock.patch.object(idp, "load", return_value=adapter))
+            stack.enter_context(mock.patch.object(idp, "load", return_value=selected or adapter))
             stack.enter_context(mock.patch.object(idp, "session", return_value=session))
             stack.enter_context(mock.patch.object(sys, "argv", [str(ROOT / "resource-api/deploy.py"), str(archive)]))
             stack.enter_context(mock.patch.object(sys, "path", list(sys.path)))
@@ -145,3 +149,18 @@ class ResourceAuthorizerTest(unittest.TestCase):
         api.create_integration.assert_not_called()
         self.assertEqual(api.update_integration.call_args.kwargs["IntegrationId"], "reused")
         self.assertEqual(api.update_route.call_args.kwargs["Target"], "integrations/reused")
+
+    def test_entra_create_and_update_use_adapter_gate_without_lambda_configuration(self):
+        selected = entra_adapter(self)
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                _, api, lam = self.deploy(existing, selected=selected)
+                call = api.update_authorizer if existing else api.create_authorizer
+                self.assertEqual(call.call_args.kwargs["Name"], "entra-jwt")
+                self.assertEqual(
+                    call.call_args.kwargs["JwtConfiguration"],
+                    {"Issuer": f"https://login.microsoftonline.com/{TENANT}/v2.0", "Audience": [RESOURCE]},
+                )
+                route = api.update_route if existing else api.create_route
+                self.assertEqual(route.call_args.kwargs["AuthorizationScopes"], ["resource.read"])
+                self.assertEqual(lam.update_function_configuration.call_args.kwargs["Environment"], {"Variables": {}})

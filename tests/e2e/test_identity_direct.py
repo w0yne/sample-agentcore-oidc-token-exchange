@@ -12,7 +12,7 @@ from lib import idp, net
 A = idp.load()
 session = idp.session()
 ctl, dp = session.client("bedrock-agentcore-control"), session.client("bedrock-agentcore")
-workload = f"{idp.PREFIX}-keycloak-workload"
+workload = f"{idp.PREFIX}-{A.NAME}-workload"
 if not any(w["name"] == workload for w in ctl.list_workload_identities()["workloadIdentities"]):
     ctl.create_workload_identity(name=workload, tags={"project": idp.PREFIX})
 with open(idp.state_file(A.NAME, "resource-api"), encoding="utf-8") as file:
@@ -33,7 +33,10 @@ for user in idp.USERS:
     request = urllib.request.Request(url + "/v1/me", headers={"authorization": "Bearer " + token})
     with net.open_https(request, timeout=30) as response:
         claims = json.load(response)
-    passed = claims.get("sub") == A.state()["users"][f"{idp.PREFIX}-{user}"] and claims.get("azp") == "gateway"
+    passed = (
+        claims.get(A.USER_ID_CLAIM) == A.state()["users"][f"{idp.PREFIX}-{user}"]
+        and claims.get("azp") == A.expected_exchanged_azp()
+    )
     results.append({"user": user, "pass": passed})
     print("PASS" if passed else "FAIL", user)
 with open(idp.evidence_path(f"identity-direct-{idp.REGION}.json"), "w", encoding="utf-8") as file:

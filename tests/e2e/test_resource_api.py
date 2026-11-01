@@ -23,7 +23,8 @@ def call(token):
         with net.open_https(request, timeout=30) as response:
             return response.status, json.load(response)
     except urllib.error.HTTPError as error:
-        return error.code, {}
+        with error:
+            return error.code, {}
 
 
 def check(name, passed):
@@ -33,7 +34,10 @@ def check(name, passed):
 
 for user in idp.USERS:
     status, claims = call(A.token(user, "resource"))
-    check(f"{user}: subject echoed", status == 200 and claims.get("sub") == A.state()["users"][f"{idp.PREFIX}-{user}"])
+    check(
+        f"{user}: subject echoed",
+        status == 200 and claims.get(A.USER_ID_CLAIM) == A.state()["users"][f"{idp.PREFIX}-{user}"],
+    )
 for label, token in (
     ("missing", None),
     ("malformed", "not-a-token"),
