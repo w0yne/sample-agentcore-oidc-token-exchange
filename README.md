@@ -16,8 +16,8 @@ The Lambda function presents the identity claims already verified by the managed
 
 ![Architecture](docs/architecture.png)
 
-The diagram and numbered example show Keycloak. Entra uses the same managed boundaries;
-its identifiers and exchange protocol are described below.
+The diagram shows Keycloak or Microsoft Entra ID, selected by `IDP`, with the same managed
+boundaries. The numbered example uses Keycloak; Entra's identifiers and exchange protocol are described below.
 
 1. A test user signs in to Keycloak and obtains T1 with audience `gateway`.
 2. The client invokes the Gateway MCP tool `resource___whoami` with T1.

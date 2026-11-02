@@ -15,7 +15,8 @@ Lambda 函数展示托管 authorizer 已验证的身份 claims。
 
 ![架构图](docs/architecture.png)
 
-图和下面的编号示例展示 Keycloak；Entra 使用同一托管边界，标识符及交换协议差异见后文。
+图展示通过 `IDP` 二选一的 Keycloak 或 Microsoft Entra ID，以及共同的托管边界。
+下面的编号示例使用 Keycloak；Entra 的标识符及交换协议差异见后文。
 
 1. 测试用户登录 Keycloak，获得 audience 为 `gateway` 的 T1。
 2. 客户端携带 T1 调用 Gateway 的 MCP 工具 `resource___whoami`。
