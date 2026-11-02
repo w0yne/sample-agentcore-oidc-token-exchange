@@ -165,7 +165,13 @@ Keycloak 的 discovery 端点及其声明的 JWKS URI 必须能被中国区 API 
 Entra adapter 使用全球 Microsoft Entra ID 的 `login.microsoftonline.com` 和 `graph.microsoft.com`，
 不是世纪互联运营的云；选择 AWS 中国区域不会改变 Microsoft 端点。
 需单独确认托管 AWS 服务到 discovery/token 端点的连通性、Identity vendor 支持及跨境政策。
-本次 fork 的 Entra 变更只有离线测试覆盖，不声明任何区域的 live e2e 已通过。
+
+**2026-11-02 实测（代码 `aaeaccd`，每个区域各运行一次）：**使用 `IDP=entra` 和可丢弃的全球 Microsoft Entra 测试 tenant。
+`us-west-2` 与 `cn-north-1` 均为 16/16（resource API 7/7、Gateway 7/7、Identity direct 2/2），清理后均无残留。
+`us-west-2` 的 cleanup dry run、执行及最终 dry run 均 exit 0；`cn-north-1` 的 API Gateway JWT authorizer 与 Identity Microsoft provider
+成功访问 `login.microsoftonline.com` 的 discovery、JWKS 和 token 端点。`cn-northwest-1` 仅验证 Entra v2.0 issuer 的 HTTP API JWT authorizer 创建成功，未跑完整 e2e。
+上述单次结果不代表长期跨境延迟或可用性；未测试世纪互联运营的 Entra。
+Cleanup 遇 AWS 错误后继续执行的路径只有单元测试覆盖，未做 live 验证。
 
 ## 使用与检查
 

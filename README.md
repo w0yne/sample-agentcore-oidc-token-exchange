@@ -204,8 +204,14 @@ in the intended environment before relying on the managed authorization boundary
 The Entra adapter targets global Microsoft Entra ID (`login.microsoftonline.com` and
 `graph.microsoft.com`), not the cloud operated by 21Vianet. Selecting an AWS China Region
 does not change those endpoints. Confirm Microsoft discovery/token reachability from the
-managed AWS services, Identity vendor support and cross-border policy separately; this
-fork's Entra changes have only offline test coverage, not a claimed regional live result.
+managed AWS services, Identity vendor support and cross-border policy separately.
+
+**Tested 2026-11-02 (code `aaeaccd`, one run per Region):** with `IDP=entra` and a disposable global Microsoft Entra test tenant,
+`us-west-2` and `cn-north-1` each passed 16/16 (resource API 7/7, Gateway 7/7, Identity direct 2/2); cleanup left no residue.
+In `us-west-2`, cleanup dry run, execute and final dry run all exited 0. In `cn-north-1`, API Gateway and Identity's Microsoft provider
+reached `login.microsoftonline.com` for discovery, JWKS and tokens. `cn-northwest-1` tested HTTP API JWT-authorizer creation with the Entra v2.0 issuer only, not full e2e.
+These single-run results make no claim about long-term cross-border latency or availability; 21Vianet Entra was not tested.
+Cleanup's continue-after-AWS-error path has unit-test coverage only; it was not exercised live.
 
 ## Usage
 
