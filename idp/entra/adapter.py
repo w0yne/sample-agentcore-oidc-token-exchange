@@ -39,8 +39,8 @@ def _scope(resource: str, value: str) -> str:
 
 def login_raw(user: str, scope: str, client: str = "app") -> dict[str, Any]:
     """Use password grant for disposable tests only; real clients must use authorization code with PKCE."""
-    if client not in ("app", "gateway"):
-        raise ValueError("client must be app or gateway")
+    if client not in ("app", "gateway", "noscope"):
+        raise ValueError("client must be app, gateway or noscope")
     c = idp.secret(idp.secret_id(NAME, f"{client}-client"))
     users = idp.secret(idp.secret_id(NAME, "users"))
     return idp.post_form(
@@ -69,7 +69,7 @@ def id_token(user: str) -> str:
 
 def token_without_resource_scope(user: str) -> str:
     """Mint a resource-audience access token with only the negative-test scope."""
-    return login_raw(user, _scope("resource", "resource.other"))["access_token"]
+    return login_raw(user, _scope("resource", "resource.other"), client="noscope")["access_token"]
 
 
 def other_resource_token(user: str) -> str:

@@ -148,16 +148,19 @@ python resource-api/deploy.py .build/resource-api.zip
 python gateway/provision.py
 ```
 
-Setup checks the signed-in tenant and retained client credentials before mutations. It creates three single-tenant app
-registrations (`<prefix>-app`, `<prefix>-gateway`, `<prefix>-resource-api`), their service
+Setup checks the signed-in tenant and retained client credentials before mutations. It creates four single-tenant app
+registrations (`<prefix>-app`, `<prefix>-gateway`, `<prefix>-resource-api`, `<prefix>-noscope`), their service
 principals, delegated admin consent and two cloud-only synthetic users. It does not create
 groups, grant directory admin roles to test users or change tenant security policies.
 Admin consent is tenant-wide within this disposable tenant; do not run setup in an
-organizational tenant. `resource.other` is a negative-test scope: it has the same resource
-audience but cannot satisfy the API route's `resource.read` requirement.
+organizational tenant. The main client has only `resource.read` consent for the resource API.
+The separate confidential `noscope` client has only `resource.other`, giving the negative
+test the same resource audience without the route's required `resource.read`. Entra can
+include all consented scopes for a client/resource, not just the requested scope, so these
+consents must not be combined on one client.
 
 The apps expose GUID-based `api://<appId>` identifiers. Source client secrets and generated
-user passwords go to `<prefix>/entra/app-client`, `gateway-client` and `users` in Secrets
+user passwords go to `<prefix>/entra/app-client`, `gateway-client`, `noscope-client` and `users` in Secrets
 Manager using the default AWS credential chain. The state file
 `<SAMPLE_STATE>/entra-state.json` contains only IDs. Client secrets expire after 90 days,
 are reused on setup reruns and are not automatically rotated; an existing Identity
@@ -266,10 +269,12 @@ IP, security group, instance role/profile and Keycloak secrets are also deleted.
 Set `KC_HOSTNAME`, `KC_HOSTED_ZONE_ID` and the original `KC_REGION` to remove the DNS record.
 Secrets are deleted without a recovery window. No rollback of partial deletion is provided.
 Resources are selected by exact prefixed names; do not reuse those names or project tags.
-Listings use their first page, so the tool is for a small sandbox, not a general inventory.
+AWS listings use their first page, so the tool is for a small sandbox, not a general inventory.
 The Gateway-managed workload identities and credential-provider secret are expected to be
 deleted by their owning services; verify the final dry run and service inventories.
-Failures are reported with a nonzero exit status. Other service logs and manually added
+Failed AWS reads are reported as `NOT CHECKED`, failed deletes as `FAILED`; independent
+cleanup continues, including Entra deletion after AWS errors. Either condition makes the
+final exit status nonzero, also for failed reads in dry run. Other service logs and manually added
 resources are outside cleanup coverage.
 
 For Entra, retain the deployment environment and tenant-admin login:
@@ -283,14 +288,23 @@ python scripts/cleanup.py --idp entra
 Inspect the first dry run before executing; the last one must show no leftovers.
 Entra cleanup verifies `ENTRA_TENANT_ID` before AWS deletion and selects unique exact app
 display names and exact test-user UPNs in that tenant, not a broad prefix match.
-It refuses duplicate application names and includes object IDs in the deletion plan.
-Keep the tenant's default domain unchanged between setup and cleanup. Missing Azure CLI, failed login,
-wrong tenant or an incomplete Entra listing produces `NOT CHECKED` and nonzero exit.
+It refuses duplicate names across active/deleted objects and includes object IDs in the deletion plan.
+Graph listings follow all pages. Keep the tenant's default domain unchanged between setup
+and cleanup. Missing Azure CLI, failed login, wrong tenant or an incomplete Entra listing
+produces `NOT CHECKED` and nonzero exit before any deletion.
 `--skip-entra-objects` avoids `az` and keeps only the Entra apps/users; it **still deletes**
 selected AWS resources and source secrets. It does not establish that the tenant is clean.
-Delete the disposable tenant when no longer needed; directory soft-deleted objects and
-tenant deletion are not purged by the script. Verify service-principal/consent cleanup
-and tenant security controls separately. AWS resources use `project=<SAMPLE_PREFIX>`;
+Dry run also lists the scoped objects already in `directory/deletedItems`. Execution
+permanently purges the sample applications, users and cascaded service principals by
+object ID; service principals are matched to scoped applications by `appId`, including
+renamed principals. A pre-existing orphaned deleted principal requires an `appId` from
+the original `entra-state.json`, checked against the tenant and prefix; its display name
+alone never authorizes a purge. Preserve `SAMPLE_STATE` until cleanup completes. Unverifiable
+prefixed orphans are retained and reported as `NOT CHECKED`. If an SP purge fails, its deleted application is retained
+to preserve the `appId` association for retry. Directory propagation or purge-permission
+errors remain failures: rerun cleanup and verify the final dry run, rather than assuming
+success. Purging is irreversible. Tenant deletion is still manual; verify tenant security
+controls separately. AWS resources use `project=<SAMPLE_PREFIX>`;
 the IdP is also part of their names, so `--idp entra` does not select Keycloak resources.
 
 ## Security, Cost and License

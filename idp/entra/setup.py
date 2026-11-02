@@ -147,7 +147,7 @@ def main() -> None:
     sm = boto3.client("secretsmanager", region_name=idp.SECRETS_REGION)
     existing_credentials = {}
     # Check retained secrets before creating apps or changing tenant-wide consent.
-    for kind in ("app", "gateway"):
+    for kind in ("app", "gateway", "noscope"):
         try:
             stored = json.loads(sm.get_secret_value(SecretId=idp.secret_id("entra", f"{kind}-client"))["SecretString"])
         except sm.exceptions.ResourceNotFoundException:
@@ -208,10 +208,7 @@ def main() -> None:
             "signInAudience": "AzureADMyOrg",
             "web": {"redirectUris": ["http://localhost:8400/callback"]},
             "requiredResourceAccess": [
-                {
-                    "resourceAppId": resource["appId"],
-                    "resourceAccess": [{"id": value, "type": "Scope"} for value in resource_scopes.values()],
-                },
+                resource_access,
                 gateway_access,
                 {
                     "resourceAppId": GRAPH_APP,
@@ -228,12 +225,27 @@ def main() -> None:
             ],
         },
     )
-    grant(app_sp, resource_sp, "resource.read resource.other")
+    noscope, noscope_sp = get_or_create_app(
+        f"{P}-noscope",
+        {
+            "signInAudience": "AzureADMyOrg",
+            "web": {"redirectUris": ["http://localhost:8400/callback"]},
+            "requiredResourceAccess": [
+                {
+                    "resourceAppId": resource["appId"],
+                    "resourceAccess": [{"id": resource_scopes["resource.other"], "type": "Scope"}],
+                }
+            ],
+        },
+    )
+    # Entra can return every consented scope, so the negative test needs its own client.
+    grant(noscope_sp, resource_sp, "resource.other")
+    grant(app_sp, resource_sp, "resource.read")
     grant(app_sp, gateway_sp, "access")
     grant(app_sp, graph_sp, "openid profile email User.Read")
     grant(gateway_sp, resource_sp, "resource.read")
     grant(gateway_sp, gateway_sp, "access")
-    for application, kind in ((app, "app"), (gateway, "gateway")):
+    for application, kind in ((app, "app"), (gateway, "gateway"), (noscope, "noscope")):
         name = idp.secret_id("entra", f"{kind}-client")
         stored = existing_credentials[kind]
         if stored is None:
@@ -291,6 +303,7 @@ def main() -> None:
             "audience": gateway["identifierUris"][0],
         },
         "app": {"appId": app["appId"], "objectId": app["id"], "spId": app_sp},
+        "noscope": {"appId": noscope["appId"], "objectId": noscope["id"], "spId": noscope_sp},
         "users": users,
     }
     with open(idp.state_file("entra", "state"), "w", encoding="utf-8") as file:

@@ -118,15 +118,17 @@ python resource-api/deploy.py .build/resource-api.zip
 python gateway/provision.py
 ```
 
-Setup 在修改前核对 tenant 及已有客户端凭证，创建三个 single-tenant app registration：
-`<prefix>-app`、`<prefix>-gateway`、`<prefix>-resource-api`，对应的 service principal、
+Setup 在修改前核对 tenant 及已有客户端凭证，创建四个 single-tenant app registration：
+`<prefix>-app`、`<prefix>-gateway`、`<prefix>-resource-api`、`<prefix>-noscope`，对应的 service principal、
 delegated admin consent，以及两个 cloud-only 合成测试用户。
 不创建组、不授予测试用户目录管理员角色、不修改 tenant 安全策略。
 Admin consent 在这个可丢弃 tenant 内对所有用户生效，因此不能在组织生产 tenant 执行。
-`resource.other` 只用于同 audience、缺少 `resource.read` 的拒绝访问测试，不授予 API 路由访问权。
+主客户端对 resource API 只获得 `resource.read` consent；独立的机密客户端 `noscope`
+只获得 `resource.other`，供“相同 audience、缺少必需 scope”的拒绝测试使用。
+Entra 可能返回同一客户端对资源的全部已同意 scope，而不只是本次请求的 scope，因此两者不能合并授权。
 
 应用使用 `api://<appId>` 标识符。客户端密钥及生成的用户密码仅写入 Secrets Manager，
-名称为 `<prefix>/entra/app-client`、`gateway-client` 和 `users`，使用 AWS 默认凭证链。
+名称为 `<prefix>/entra/app-client`、`gateway-client`、`noscope-client` 和 `users`，使用 AWS 默认凭证链。
 `<SAMPLE_STATE>/entra-state.json` 只保存 ID。客户端密钥有效期 90 天，重跑 setup 会复用，
 不会自动续期；已存在的 Identity provider 也保留自己的密钥副本。
 再次测试应先清理再使用新前缀，不能假设修改源 secret 就同步完成 provider 轮换。
@@ -209,9 +211,11 @@ python scripts/cleanup.py --execute --idp keycloak
 `--idp keycloak` 还删除 Keycloak 实例及 realm 数据、EIP、安全组、实例角色和凭证。
 DNS 清理需要原来的 `KC_HOSTNAME`、`KC_HOSTED_ZONE_ID` 和 `KC_REGION`。
 Secrets Manager 无恢复窗口删除；失败后没有自动回滚。
-按精确资源名与项目标签选择，不要复用它们。列表只读第一页，适用于小型 sandbox。
+按精确资源名与项目标签选择，不要复用它们。AWS 列表只读第一页，适用于小型 sandbox。
 Gateway 管理的 workload identity 和 provider secret 预计由所属服务清理，
 必须通过最终 dry run 和服务资源清单确认。其他日志和手工添加的资源不在清理范围。
+AWS 读取失败记录为 `NOT CHECKED`，删除失败记录为 `FAILED`，然后继续其他独立资源，
+包括 AWS 失败后的 Entra 清理；存在任意失败则最终非零退出，dry run 的读取失败也一样。
 
 Entra 保持原部署环境变量和 tenant 管理员登录：
 
@@ -223,12 +227,18 @@ python scripts/cleanup.py --idp entra
 
 先审阅 dry run，执行后再次 dry run，必须不再列出残留。
 脚本在 AWS 删除前核对 `ENTRA_TENANT_ID`，按 tenant 内唯一的精确 app display name 及完整测试用户 UPN 查找，
-不是宽泛的前缀匹配；应用重名则停止，并在删除计划中展示 object ID。
-Setup 到 cleanup 期间应保持 tenant 默认域名不变。Azure CLI 缺失、未登录、tenant 错误或 Entra 列表不完整时，
-输出 `NOT CHECKED` 并非零退出。
+不是宽泛的前缀匹配；active/deleted 对象重名则在任何删除前停止，并在计划中展示 object ID。
+Graph 列表会遍历所有页。Setup 到 cleanup 期间应保持 tenant 默认域名不变。
+Azure CLI 缺失、未登录、tenant 错误或 Entra 列表不完整时，在任何删除前输出 `NOT CHECKED` 并非零退出。
 `--skip-entra-objects` 不调用 `az`，只保留 Entra apps/users；**仍会删除**所选 AWS 资源和源 secret，
-不能据此声称 tenant 已清理。不再需要时删除测试 tenant；脚本不永久清除目录的软删除对象，
-不删除 tenant。Service principal/consent 清理及安全策略保持情况需要另行核对。
+不能据此声称 tenant 已清理。Dry run 也会列出 `directory/deletedItems` 中属于样例的对象。
+执行模式会按 object ID 永久清除样例 applications、users 及级联删除的 service principals；
+SP 通过所选应用的 `appId` 关联，支持已重命名的 SP。历史孤立 deleted SP 必须通过原
+`entra-state.json` 中的 `appId` 确认归属，且 state 的 tenant/prefix 必须匹配，不能只按名字 purge。
+清理完成前保留 `SAMPLE_STATE`；无法确认归属的同前缀孤立 SP 保留并报告 `NOT CHECKED`。
+若 SP purge 失败，会保留应用的软删除记录，以便下次仍通过 `appId` 重试。
+目录传播延迟或 purge 权限错误仍视为失败，必须重跑并检查最终 dry run。永久清除不可恢复。
+脚本不删除 tenant；不再需要时手工删除测试 tenant，并核对安全策略保持情况。
 AWS 资源标签为 `project=<SAMPLE_PREFIX>`，名称也带 IdP，因此 `--idp entra` 不选择 Keycloak 资源。
 
 ## 安全、费用和许可证

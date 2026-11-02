@@ -92,7 +92,7 @@ class EntraAdapterTest(unittest.TestCase):
             self.a.token("user-b", "gateway")
             login.assert_called_with("user-b", f"api://{GATEWAY}/access")
             self.a.token_without_resource_scope("user-a")
-            login.assert_called_with("user-a", f"api://{RESOURCE}/resource.other")
+            login.assert_called_with("user-a", f"api://{RESOURCE}/resource.other", client="noscope")
             self.a.other_client_token("user-a")
             login.assert_called_with("user-a", f"api://{GATEWAY}/access", client="gateway")
             self.assertEqual(self.a.id_token("user-a"), "id")
@@ -114,3 +114,38 @@ class EntraAdapterTest(unittest.TestCase):
         self.assertEqual(post.call_args.args[1]["client_id"], APP)
         self.assertEqual(post.call_args.args[1]["grant_type"], "password")
         self.assertEqual(post.call_args.args[1]["username"], "user-a@example.com")
+
+    def test_negative_scope_token_uses_separate_confidential_client_credentials(self):
+        credentials = {
+            "sample-oidc/entra/app-client": {
+                "client_id": APP,
+                "client_secret": "synthetic-app-secret",
+            },
+            "sample-oidc/entra/noscope-client": {
+                "client_id": "noscope-client-id",
+                "client_secret": "synthetic-noscope-secret",
+            },
+            "sample-oidc/entra/users": {
+                "sample-oidc-user-a": {"upn": "user-a@example.com", "password": "synthetic-password"}
+            },
+        }
+        with (
+            mock.patch.object(idp, "secret", side_effect=credentials.__getitem__) as secret,
+            mock.patch.object(idp, "post_form", return_value={"access_token": "negative-token"}) as post,
+        ):
+            self.assertEqual(self.a.token_without_resource_scope("user-a"), "negative-token")
+        self.assertEqual(
+            secret.call_args_list,
+            [mock.call("sample-oidc/entra/noscope-client"), mock.call("sample-oidc/entra/users")],
+        )
+        post.assert_called_once_with(
+            f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token",
+            {
+                "grant_type": "password",
+                "client_id": "noscope-client-id",
+                "client_secret": "synthetic-noscope-secret",
+                "username": "user-a@example.com",
+                "password": "synthetic-password",
+                "scope": f"api://{RESOURCE}/resource.other",
+            },
+        )
